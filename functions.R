@@ -1,16 +1,17 @@
-## Computes the likelihood for one given set of observations for (S1,S2,W).
+## Computes the log-likelihood for one given set of observations (S1,S2,W,rC).
 ## Since the likelihood involves nested integrals, each integral is approximated
 ## by a Riemann sum, the quality of the approximation can be controlled with N.
 ## Input:
 ## x1, x2        - Observed values for S1 and S2 (one value each)
 ## w             - Observed value for W (can be equal to x1)
+## rC            - Exponential parameter at the observed location
 ## theta1_polar, - Parameters to test given in polar coordinates, theta1_polar 
 ## theta2_polar    is used for the incubation distribution and theta2_polar for
 ##                 the generation time distribution.
 ## N             - Length of the Riemann sum in the integral approximation. De-
 ##                 fault value is 500.
 ## Output: Value of the likelihood
-inc_likelihood <- function(x1,x2,w,theta1_polar,theta2_polar,N=500) {
+inc_likelihood <- function(x1,x2,w,rC,theta1_polar,theta2_polar,N=500) {
   theta1 <- polar2rect(1,theta1_polar)
   theta2 <- polar2rect(1,theta2_polar)
   
@@ -23,7 +24,7 @@ inc_likelihood <- function(x1,x2,w,theta1_polar,theta2_polar,N=500) {
   ax2 <- x2-(0:(N-1))*Delta
   
   ## Compute Laguerre polynomials on grid
-  fIx1 <- laguerre_density_pos(ax1,theta1)*(ax1>=x1-min(c(x1,w)))
+  fIx1 <- laguerre_density_pos(ax1,theta1)*(ax1>=x1-min(c(x1,w)))*exp(rC*x1)*exp(-rC*ax1)
   fIx2 <- laguerre_density_pos(ax2,theta1)
   fG   <- laguerre_density_pos(y  ,theta2)
   
@@ -80,6 +81,90 @@ laguerre_density_pos <- function(z,theta) {
   return(f)
 }
 
+## Computes \int_0^zf_{theta}(x)dx, i.e.,  the distribution function of the cor-
+## responding Laguerre density on the positives as specified in the paper.
+## Input:
+##  z     - Vector of points at which the distribution shall be evaluated
+##  theta - Parameter vector provided in Cartesian coordinates (must have norm 1)
+## Output: A vector of the same length as z which contains the corresponding
+##         values of the density.
+laguerre_distr_pos <- function(z,theta) {
+  m <- length(theta)-1
+  n <- length(z)
+  
+  ## Compute integrals \int_0^z x^ke^(-x)dx for k=0,...,2m
+  pint <- matrix(0,ncol=2*m+1,nrow=n)
+  pint[,1] <- 1-exp(-z)
+  for(k in 2:(2*m+1)) {
+    pint[,k] <- -z^(k-1)*exp(-z)+(k-1)*pint[,k-1]
+  }
+  
+  ## Compute distribution function
+  out <- rep(0,n)
+  for(k1 in 0:m) {
+    for(k2 in 0:m) {
+      for(i1 in 0:k1) {
+        for(i2 in 0:k2) {
+          out <- out+theta[k1+1]*theta[k2+1]*choose(k1,i1)*choose(k2,i2)*(-1)^(i1+i2)/factorial(i1)/factorial(i2)*pint[,i1+i2+1]
+        }
+      }
+    }
+  }
+  
+  return(out)
+}
+
+## Computes the basic reproduction number belonging to a certain generation time
+## density specified through a Laguerre density on the positives as specified in
+## the paper.
+## Input:
+##  theta - Parameter vector provided in Cartesian coordinates (must have norm 1)
+##  r     - Exponential growth parameter of the pandemic.
+## Output: The corresponding basic reproduction number.
+laguerre_R0 <- function(theta,r) {
+  m <- length(theta)-1
+
+  ## Compute integrals \int_0^infinity x^ke^(-(1+r)x)dx for k=0,...,2m
+  pint <- rep(0,2*m+1)
+  pint[1] <- 1/(1+r)
+  for(k in 2:(2*m+1)) {
+    pint[k] <- (k-1)/(1+r)*pint[k-1]
+  }
+  
+  ## Compute FR
+  FR <- 0
+  for(k1 in 0:m) {
+    for(k2 in 0:m) {
+      for(i1 in 0:k1) {
+        for(i2 in 0:k2) {
+          FR <- FR+theta[k1+1]*theta[k2+1]*choose(k1,i1)*choose(k2,i2)*(-1)^(i1+i2)/factorial(i1)/factorial(i2)*pint[i1+i2+1]
+        }
+      }
+    }
+  }
+  
+  return(1/FR)
+}
+
+## Computes the quantile of a given Laguerre denisty by numerically evaluating
+## the density between 0 and a user specified upper bound ub on a equidistant
+## grid of length L. The returned value equals the average of the two closest
+## quantiles on the grid.
+## Input:
+##  theta - Parameter of Laguerre density, cf. laguerre_density_pos
+##  tau   - Quantile to be found
+##  ub    - Upper bound of the evaluating grid (default is 20)
+##  L     - Number of points in the evaluating grid (default is 10000)
+## Output: An estimate of the tau-th quantile.
+lag_quantile <- function(theta,tau,ub=20,L=10000) {
+  z <- seq(from=0,to=ub,length.out=L)
+  distr <- laguerre_distr_pos(z,theta)
+  
+  q1 <- z[min(which(distr>=tau))]
+  q2 <- z[max(which(distr<=tau))]
+  return((q1+q2)/2)
+}
+
 ## Compute the Laguerre Polynom of given order.
 ## Input:
 ##  z - points at which the Laguerre polynomial shall be evaluated (must be non-
@@ -115,6 +200,8 @@ laguerre_polynomial <- function(z,k) {
 ##           entries in x2 are the observations for S2.
 ## w       - Vector of the same length as x1 and x2. Each entry corresponds to
 ##           an observation of min(S1,W).
+## rC      - Vector of the same length as x1 and x2. Each entry corresponds to
+##           an observation of the exponential parameter at the observed location.
 ## m1,m2   - Two integers (both at least 1) which specify the size of the fitted
 ##           model. See also the description of theta.
 ## N       - Same as for inc_likelihood
@@ -125,7 +212,7 @@ laguerre_polynomial <- function(z,k) {
 ## Output: The un-normalized (i.e. not divided by the number of observations),
 ##         negative log-likelihood corresponding to the given observations
 ##         and models.
-whole_inc_likelihood <- function(theta,x1,x2,w,m1,m2,N=500,cluster=FALSE) {
+whole_inc_likelihood <- function(theta,x1,x2,w,rC,m1,m2,N=500,cluster=FALSE) {
   n <- length(x1)
   
   theta1_polar <- theta[1:m1]
@@ -135,12 +222,12 @@ whole_inc_likelihood <- function(theta,x1,x2,w,m1,m2,N=500,cluster=FALSE) {
     ## DO Serial Computation
     out <- 0
     for(i in 1:n) {
-      out <- out+inc_likelihood(x1[i],x2[i],w[i],theta1_polar,theta2_polar,N)
+      out <- out+inc_likelihood(x1[i],x2[i],w[i],rC[i],theta1_polar,theta2_polar,N)
     }
   } else {
     clusterCall(cluster,source,'functions.R')
     out <- foreach(i=1:n,.combine=cbind,.packages='SphericalCubature') %dopar% {
-      inc_likelihood(x1[i],x2[i],w[i],theta1_polar,theta2_polar,N)
+      inc_likelihood(x1[i],x2[i],w[i],rC[i],theta1_polar,theta2_polar,N)
     }
     out <- sum(out)
   }
@@ -152,7 +239,7 @@ whole_inc_likelihood <- function(theta,x1,x2,w,m1,m2,N=500,cluster=FALSE) {
 ## Input
 ##  fdens - Function which shall be approximated. The first argument of fdens
 ##          must be the vector of evaluation points and the output of fdens must
-##          be a vector of the same langth containing the respective evaluations.
+##          be a vector of the same length containing the respective evaluations.
 ##  m     - Order of the Laguerre Approximation
 ##  ...   - Additional arguments which are passed to fdens.
 ## Output: Vector of length m+1 which contains the normalized Cartesian coordi-

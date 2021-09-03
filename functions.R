@@ -146,7 +146,7 @@ laguerre_R0 <- function(theta,r) {
   return(1/FR)
 }
 
-## Computes the quantile of a given Laguerre denisty by numerically evaluating
+## Computes the quantile of a given Laguerre density by numerically evaluating
 ## the density between 0 and a user specified upper bound ub on a equidistant
 ## grid of length L. The returned value equals the average of the two closest
 ## quantiles on the grid.

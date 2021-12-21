@@ -3,6 +3,12 @@ library(doParallel)
 library(foreach)
 library(nloptr)
 library(SphericalCubature)
+
+## Load functions
+dyn.load("c_function.dll")
+source('./functions.R')
+
+## Set seed for reproducability
 set.seed(2020)
 
 
@@ -36,37 +42,15 @@ w <- pmin(w,S1)
 m1 <- 2
 m2 <- 2
 
-opts <- list(algorithm="NLOPT_LN_SBPLX",print_level=0,xtol_rel=0.001,maxeval=10000)
-
-noc <- detectCores()-1
-cl <- makeCluster(noc,outfile="progress")
-registerDoParallel(cl)
-
-## Prepare output
-trials <- 5
-out <- vector(mode="list",length=trials)
-
-## Do Estimation
-currmin <- Inf
-lowest <- 1
-for(i in 1:trials) {
-  out[[i]] <- nloptr(x0=runif(m1+m2,min=0,max=pi),eval_f=whole_inc_likelihood,lb=rep(0,m1+m2),ub=rep(pi,m1+m2),opts=opts,x1=S1,x2=S2,w=w,rC=rC,m1=m1,m2=m2,N=500,cluster=cl)
-  if(out[[i]]$objective<currmin) {
-    lowest <- i
-    currmin <- out[[i]]$objective
-  }
-  cat("Trial ",i,".\n")
-}
-stopCluster(cl)
+model_fit <- fit_laguerre(S1,S2,w,rC,NULL,m1,m2,10,0.0001,10000,500,TRUE)
 
 ################################################################################
 ## Visualize density estimate ##################################################
 ################################################################################
 
 ## Extract Estimate
-estimate <-  out[[lowest]]$solution
-theta1_est <- polar2rect(1,estimate[     1:(m1   )])
-theta2_est <- polar2rect(1,estimate[(m1+1):(m1+m2)])
+theta1_est <- model_fit$theta1
+theta2_est <- model_fit$theta2
 
 ## Compute estimated densities
 x <- seq(from=0,to=15,length.out=1000)
@@ -110,8 +94,8 @@ true_quant_gen <- qweibull(tau,shape=2.826,scale=5.665)
 best_quant_inc <- rep(0,length(tau))
 best_quant_gen <- rep(0,length(tau))
 for(k in 1:length(tau)) {
-  best_quant_inc[k] <- lag_quantile(best_theta_inc,tau[k])
-  best_quant_gen[k] <- lag_quantile(best_theta_gen,tau[k])
+  best_quant_inc[k] <- laguerre_quantile(best_theta_inc,tau[k])
+  best_quant_gen[k] <- laguerre_quantile(best_theta_gen,tau[k])
 }
 
 ## Estimated Quantiles
@@ -119,8 +103,8 @@ est_quant_inc <- rep(0,length(tau))
 est_quant_gen <- rep(0,length(tau))
 
 for(k in 1:length(tau)) {
-  est_quant_inc[k] <- lag_quantile(theta1_est,tau[k])
-  est_quant_gen[k] <- lag_quantile(theta2_est,tau[k])
+  est_quant_inc[k] <- laguerre_quantile(theta1_est,tau[k])
+  est_quant_gen[k] <- laguerre_quantile(theta2_est,tau[k])
 }
 
 ## Print result
@@ -156,39 +140,20 @@ cat("True R0 is ",R0," while the estimate is ",R0_est,".\n")
 ################################################################################
 ## Model Selection #############################################################
 ################################################################################
-trials <- 5
-m1_max <- 4
-m2_max <- 4
-out_matrix <- matrix(0,nrow=m1_max,ncol=m2_max)
-opts <- list(algorithm="NLOPT_LN_SBPLX",print_level=0,xtol_rel=0.001,maxeval=10000)
-out <- vector(mode="list",length=trials)
-
 noc <- detectCores()-1
 cl <- makeCluster(noc,outfile="progress")
 registerDoParallel(cl)
 
-for(m1 in 1:m1_max) {
-  for(m2 in 1:m2_max) {
-    for(i in 1:trials) {
-      currmin <- Inf
-      lowest <- 0
-      out[[i]] <- nloptr(x0=runif(m1+m2,min=0,max=pi),eval_f=whole_inc_likelihood,lb=rep(0,m1+m2),ub=rep(pi,m1+m2),opts=opts,x1=S1,x2=S2,w=w,rC=rC,m1=m1,m2=m2,N=500,cluster=cl)
-      if(out[[i]]$objective<currmin) {
-        lowest <- i
-        currmin <- out[[i]]$objective
-      }
-      cat("Trial ",i,".\n")
-    }
-    out_matrix[m1,m2] <- out[[lowest]]$objective
-  }
-}
+MSL <- model_selection_laguerre(S1,S2,w,rC,8,8,TRUE,10,0.0001,10000,500,cl)
+MSLmon <- force_monotonicity(MSL,S1,S2,w,rC,0.0001,10000,500,TRUE)
+
 stopCluster(cl)
 
-BIC <- matrix(0,ncol=m2_max,nrow=m1_max)
-AIC <- matrix(0,ncol=m2_max,nrow=m1_max)
-for(m1 in 1:m1_max) {
-  for(m2 in 1:m2_max) {
-    BIC[m1,m2] <- (m1+m2+2)*log(n)-2*(-out_matrix[m1,m2])
-    AIC[m1,m2] <- (m1+m2+2)       -2*(-out_matrix[m1,m2])
+BIC <- matrix(0,ncol=8,nrow=8)
+AIC <- matrix(0,ncol=8,nrow=8)
+for(m1 in 1:8) {
+  for(m2 in 1:8) {
+    BIC[m1,m2] <- (m1+m2+2)*log(n)-2*(-MSLmon$L_matrix[m1,m2])
+    AIC[m1,m2] <- (m1+m2+2)       -2*(-MSLmon$L_matrix[m1,m2])
   }
 }
